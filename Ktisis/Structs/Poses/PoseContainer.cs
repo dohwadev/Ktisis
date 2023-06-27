@@ -2,6 +2,9 @@
 using System.Collections.Generic;
 
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
+using FFXIVClientStructs.FFXIV.Client.Graphics.Scene;
+
+using Ktisis.Structs.Actor;
 
 namespace Ktisis.Structs.Poses {
 	public class PoseContainer : Dictionary<string, Transform> {
@@ -23,10 +26,10 @@ namespace Ktisis.Structs.Poses {
 				var skeleton = pose->Skeleton;
 				for (var i = 0; i < skeleton->Bones.Length; i++) {
 					if (i == partial.ConnectedBoneIndex)
-						continue; // this would be a mess, unsupported by anam poses anyway
+						continue;
 
 					var bone = modelSkeleton->GetBone(p, i);
-					var name = bone.HkaBone.Name.String;
+					var name = bone.HkaBone.Name.String!;
 
 					var model = bone.AccessModelSpace();
 					this[name] = Transform.FromHavok(*model);
@@ -41,6 +44,13 @@ namespace Ktisis.Structs.Poses {
 		}
 
 		public unsafe void ApplyToPartial(Skeleton* modelSkeleton, int p, PoseTransforms trans = PoseTransforms.Rotation, bool setRootPos = false, bool parentPartial = true) {
+			var isElezen = false;
+			var owner = modelSkeleton->Owner;
+			if (owner != null && owner->GetModelType() == CharacterBase.ModelType.Human) {
+				var human = (Human*)owner;
+				isElezen = human->Race == (byte)Race.Elezen;
+			}
+
 			var partial = modelSkeleton->PartialSkeletons[p];
 
 			var pose = partial.GetHavokPose(0);
@@ -50,7 +60,10 @@ namespace Ktisis.Structs.Poses {
 				var skeleton = pose->Skeleton;
 				for (var i = 0; i < skeleton->Bones.Length; i++) {
 					var bone = modelSkeleton->GetBone(p, i);
-					var name = bone.HkaBone.Name.String;
+					var name = bone.HkaBone.Name.String ?? "";
+
+					if (isElezen && name is "j_mimi_l" or "j_mimi_r")
+						continue;
 
 					if (TryGetValue(name, out var val)) {
 						var model = bone.AccessModelSpace();

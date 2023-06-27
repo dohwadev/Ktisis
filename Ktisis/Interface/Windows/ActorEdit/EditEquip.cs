@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Numerics;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 
 using ImGuiNET;
 using ImGuiScene;
@@ -11,6 +12,7 @@ using Dalamud.Interface;
 using Ktisis.Util;
 using Ktisis.Data;
 using Ktisis.Data.Excel;
+using Ktisis.Helpers.Async;
 using Ktisis.Structs.Actor;
 using Ktisis.Structs.Actor.Equip;
 using Ktisis.Interface.Components;
@@ -25,7 +27,7 @@ namespace Ktisis.Interface.Windows.ActorEdit {
 
 		public unsafe static Actor* Target => EditActor.Target;
 
-		public static IEnumerable<Item>? Items;
+		public static IEnumerable<Item>? Items => ItemData.Get();
 
 		public static Dictionary<EquipSlot, ItemCache> Equipped = new();
 
@@ -38,21 +40,31 @@ namespace Ktisis.Interface.Windows.ActorEdit {
 		private static bool DrawSetDyeSelection = false;
 
 		private static EquipSlot? SlotSelectDye;
-		public static readonly IEnumerable<Dye> Dyes = Sheets.GetSheet<Dye>()
-			.Where(i => i.IsValid())
-			.OrderBy(i => i.Shade).ThenBy(i => i.SubOrder);
+		
+		public static IEnumerable<Dye>? Dyes => DyeData.Get();
 
 		public static Item? FindItem(object item, EquipSlot slot)
 			=> Items?.FirstOrDefault(i => (item is WeaponEquip ? i.IsWeapon() : i.IsEquippable(slot)) && i.IsEquipItem(item), null!);
 
 		public static EquipIndex SlotToIndex(EquipSlot slot) => (EquipIndex)(slot - ((int)slot >= 5 ? 3 : 2));
 
+		// Async
+
+		private readonly static AsyncData<IEnumerable<Item>> ItemData = new(GetItemData);
+		private static IEnumerable<Item> GetItemData(object[] args)
+			=> Sheets.GetSheet<Item>().Where(i => i.IsEquippable());
+
+		private readonly static AsyncData<IEnumerable<Dye>> DyeData = new(GetDyeData);
+		private static IEnumerable<Dye> GetDyeData(object[] args)
+			=> Sheets.GetSheet<Dye>()
+				.Where(i => i.IsValid())
+				.OrderBy(i => i.Shade).ThenBy(i => i.SubOrder);
+		
 		// UI Code
 
 		public static void Draw() {
-			if (Items == null)
-				Items = Sheets.GetSheet<Item>().Where(i => i.IsEquippable());
-
+			if (Items == null || Dyes == null) return;
+			
 			DrawControls();
 
 			ImGui.BeginGroup();
@@ -92,22 +104,20 @@ namespace Ktisis.Interface.Windows.ActorEdit {
 			}
 
 			if (!Equipped.ContainsKey(slot)) {
-				Equipped.Add(slot, new() {
-					Equip = equipObj,
-					Item = FindItem(equipObj, slot)
-				});
+				var iCache = new ItemCache { Equip = equipObj };
+				iCache.ResolveItem(slot);
+				Equipped.Add(slot, iCache);
 			} else if (!Equipped[slot].Equip!.Equals(equipObj)) {
 				Equipped[slot].Equip = equipObj;
-				Equipped[slot].Item = isEmpty ? null : FindItem(equipObj, slot);
-				Equipped[slot].Icon = null;
+				Equipped[slot].ResolveItem(slot);
 			}
 
 			var item = Equipped[slot];
-			if (item.Icon == null)
-				item.Icon = Services.DataManager.GetImGuiTextureIcon(item.Item == null ? (uint)0 : item.Item.Icon);
-
-			if (ImGui.ImageButton(item.Icon!.ImGuiHandle, IconSize) && SlotSelect == null)
+			var icon = item.GetIcon() is TextureWrap tex ? tex.ImGuiHandle : 0;
+			ImGui.PushID((int)slot);
+			if (ImGui.ImageButton(icon, IconSize) && SlotSelect == null)
 				OpenSelector(slot);
+			ImGui.PopID();
 
 			if (ImGui.IsItemClicked(ImGuiMouseButton.Right)) {
 				if (isWeapon)
@@ -144,9 +154,27 @@ namespace Ktisis.Interface.Windows.ActorEdit {
 			ImGui.PopItemWidth();
 			ImGui.SameLine();
 
-			var dye = Dyes.FirstOrDefault(i => i.RowId == (isWeapon ? ((WeaponEquip)equipObj).Dye : ((ItemEquip)equipObj).Dye))!;
+			var dye = Dyes!.FirstOrDefault(i => i.RowId == (isWeapon ? ((WeaponEquip)equipObj).Dye : ((ItemEquip)equipObj).Dye))!;
 			if (ImGui.ColorButton($"{dye.Name} [{dye.RowId}]##{slot}", dye.ColorVector4, ImGuiColorEditFlags.NoBorder))
 				OpenDyePicker(slot);
+
+			if (equipObj is WeaponEquip) {
+				ImGui.SameLine();
+
+				var wep = slot == EquipSlot.MainHand ? &tar->MainHand : &tar->OffHand;
+				
+				var hidden = (wep->Flags & WeaponFlags.Hidden) != 0;
+				if (DrawVisibilityToggle($"wep_vis_{slot}", hidden))
+					wep->Flags ^= WeaponFlags.Hidden;
+			} else if (slot == EquipSlot.Head) {
+				ImGui.SameLine();
+				
+				var hidden = tar->IsHatHidden;
+				if (DrawVisibilityToggle("head_vis", hidden)) {
+					tar->IsHatHidden ^= true;
+					tar->Equip(SlotToIndex(slot), tar->Equipment.Head);
+				}
+			}
 
 			ImGui.EndGroup();
 
@@ -173,8 +201,22 @@ namespace Ktisis.Interface.Windows.ActorEdit {
 		public static void OpenSetDyePicker() => DrawSetDyeSelection = true;
 		public static void CloseSetDyePicker() => DrawSetDyeSelection = false;
 
+		private static bool DrawVisibilityToggle(string id, bool hidden) {
+			// this is fucking stupid
+			var width = Math.Max(
+				GuiHelpers.CalcIconSize(FontAwesomeIcon.EyeSlash).X,
+				GuiHelpers.CalcIconSize(FontAwesomeIcon.Eye).X
+			) + ImGui.GetStyle().ItemSpacing.X;
 
-		public static void DrawControls() {
+			return GuiHelpers.IconButtonTooltip(
+				hidden ? FontAwesomeIcon.EyeSlash : FontAwesomeIcon.Eye,
+				"Toggle visibility",
+				new Vector2(width, 0),
+				id
+			);
+		}
+
+		public unsafe static void DrawControls() {
 			if (GuiHelpers.IconButtonTooltip(FontAwesomeIcon.Tshirt, "Look up for a set."))
 				OpenSetSelector();
 			ImGui.SameLine();
@@ -193,6 +235,7 @@ namespace Ktisis.Interface.Windows.ActorEdit {
 		{
 			if (SlotItems == null)
 				return;
+			
 			PopupSelect.HoverPopupWindow(
 				PopupSelect.HoverPopupWindowFlags.SelectorList | PopupSelect.HoverPopupWindowFlags.SearchBar,
 				SlotItems,
@@ -272,7 +315,7 @@ namespace Ktisis.Interface.Windows.ActorEdit {
 				PopupSelect.HoverPopupWindowFlags.SearchBar
 				| PopupSelect.HoverPopupWindowFlags.TwoDimenssion
 				| PopupSelect.HoverPopupWindowFlags.Header,
-				Dyes,
+				Dyes!,
 				(e, input) => e.Where(i => i.Name.Contains(input, StringComparison.OrdinalIgnoreCase)),
 				DrawDyePickerHeader,
 				DrawDyePickerItem,
@@ -301,7 +344,7 @@ namespace Ktisis.Interface.Windows.ActorEdit {
 				PopupSelect.HoverPopupWindowFlags.SearchBar
 				| PopupSelect.HoverPopupWindowFlags.TwoDimenssion
 				| PopupSelect.HoverPopupWindowFlags.Header,
-				Dyes,
+				Dyes!,
 				(e, input) => e.Where(i => i.Name.Contains(input, StringComparison.OrdinalIgnoreCase)),
 				DrawDyePickerHeader,
 				DrawDyePickerItem,
@@ -376,5 +419,32 @@ namespace Ktisis.Interface.Windows.ActorEdit {
 		public object? Equip;
 		public Item? Item;
 		public TextureWrap? Icon;
+
+		private ushort? IconId;
+		private bool FetchingIcon = false;
+
+		public void ResolveItem(EquipSlot slot) {
+			if (Equip != null)
+				new Task(() => Item = EditEquip.FindItem(Equip, slot)).Start();
+			else Item = null;
+		}
+		
+		public TextureWrap? GetIcon() {
+			if (Item != null && (Icon == null || IconId != Item.Icon) && !FetchingIcon) {
+				FetchingIcon = true;
+				new Task(() => {
+					try {
+						IconId = Item?.Icon;
+						Icon = Services.DataManager.GetImGuiTextureIcon(IconId ?? (uint)0);
+					} finally {
+						FetchingIcon = false;
+					}
+				}).Start();
+			} else if (Item == null && Icon != null) {
+				Icon = null;
+			}
+			
+			return Icon;
+		}
 	}
 }

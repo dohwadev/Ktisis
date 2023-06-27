@@ -75,7 +75,7 @@ namespace Ktisis.Overlay {
 				var skeleton = pose->Skeleton;
 				for (var i = 1; i < skeleton->Bones.Length; i++) {
 					var bone = model->Skeleton->GetBone(p, i);
-					var boneName = bone.HkaBone.Name.String;
+					var boneName = bone.HkaBone.Name.String ?? "";
 					var parentId = bone.ParentId;
 
 					var uniqueName = bone.UniqueName;

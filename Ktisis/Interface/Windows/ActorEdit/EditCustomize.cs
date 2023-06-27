@@ -16,6 +16,7 @@ using Ktisis.Util;
 using Ktisis.Data;
 using Ktisis.Data.Excel;
 using Ktisis.Data.Files;
+using Ktisis.Helpers.Async;
 using Ktisis.Localization;
 using Ktisis.Structs.Actor;
 using Ktisis.Interface.Windows.ActorEdit;
@@ -36,6 +37,7 @@ namespace Ktisis.Interface.Windows {
 		public CustomizeIndex Index = 0;
 		public CustomizeIndex AltIndex = 0;
 		public uint[] Colors = Array.Empty<uint>();
+		public uint[]? AltColors;
 		public bool Iterable = true;
 
 		public MenuColor(string name, CustomizeIndex index) {
@@ -83,11 +85,47 @@ namespace Ktisis.Interface.Windows {
 		public static bool IsPosing => Interop.Hooks.PoseHooks.PosingEnabled;
 
 		// Apply customize
-
-
+		
 		public unsafe static void Apply(Customize custard) {
 			if (Target != null)
 				Target->ApplyCustomize(custard);
+		}
+		
+		// Async
+
+		private readonly static AsyncTask GetMakeData = new(InvokeMakeData);
+		private static void InvokeMakeData(object[] args) {
+			if (args[0] is not uint index || args[1] is not Customize custom)
+				return;
+			
+			MenuOptions = GetMenuOptions(index, custom);
+			CustomIndex = index;
+			FacialFeatureIcons = null;
+		}
+
+		private readonly static AsyncTask GetFeatureIcons = new(InvokeFeatureIcons);
+		private static void InvokeFeatureIcons(object[] args) {
+			if (args[0] is not Customize custom)
+				return;
+			
+			var features = new List<TextureWrap>();
+			for (var i = 0; i < 7; i++) {
+				var index = custom.FaceType - 1 + (8 * i);
+				if (custom.Race == Race.Hrothgar)
+					index -= 4; // ???
+
+				if (index < 0 || index >= CharaMakeType.FacialFeatures.Length)
+					index = 8 * i;
+
+				var iconId = (uint)CharaMakeType.FacialFeatures[index];
+				if (iconId == 0)
+					iconId = (uint)CharaMakeType.FacialFeatures[8 * i];
+
+				var icon = Services.DataManager.GetImGuiTextureIcon(iconId);
+				if (icon != null) features.Add(icon);
+			}
+			FacialFeatureIcons = features;
+			FaceType = custom.FaceType;
 		}
 
 		// Draw window
@@ -104,11 +142,8 @@ namespace Ktisis.Interface.Windows {
 			}
 
 			var index = custom.GetMakeIndex();
-			if (index != CustomIndex) {
-				MenuOptions = GetMenuOptions(index, custom);
-				CustomIndex = index;
-				FacialFeatureIcons = null;
-			}
+			if (index != CustomIndex && !GetMakeData.IsRunning)
+				GetMakeData.Run(index, custom);
 
 			DrawFundamental(custom);
 			DrawMenuType(custom, MenuType.Slider);
@@ -310,6 +345,7 @@ namespace Ktisis.Interface.Windows {
 		// Color selection
 
 		public static void DrawColors(Customize custom) {
+			if (MenuColors.Count == 0) return;
 			var colors = MenuColors.OrderBy(c => c.AltIndex);
 
 			var i = 0;
@@ -338,8 +374,9 @@ namespace Ktisis.Interface.Windows {
 				selecting = color.Index;
 
 			if (color.AltIndex != 0) {
+				var altColor = color.AltColors ?? color.Colors;
 				var altIndex = custom.Bytes[(uint)color.AltIndex];
-				var altRgb = altIndex >= color.Colors.Length || altIndex < 0 ? 0 : color.Colors[altIndex];
+				var altRgb = altIndex >= color.Colors.Length ? 0 : altColor[altIndex];
 				ImGui.SameLine();
 				if (DrawColorButton($"{altIndex}##{color.Name}##alt", altRgb))
 					selecting = color.AltIndex;
@@ -357,9 +394,10 @@ namespace Ktisis.Interface.Windows {
 			if (color.AltIndex != 0) name += "s";
 			ImGui.Text(name);
 
-			if (Selecting == color.Index || Selecting == color.AltIndex){
+			if (Selecting == color.Index || Selecting == color.AltIndex) {
 				byte value = custom.Bytes[(uint)Selecting];
-				if (DrawColorList(custom, color, ref value)) {
+				var colors = Selecting == color.AltIndex ? (color.AltColors ?? color.Colors) : color.Colors;
+				if (DrawColorList(colors, ref value)) {
 					custom.Bytes[(uint)Selecting] = value;
 					Apply(custom);
 				}
@@ -381,7 +419,7 @@ namespace Ktisis.Interface.Windows {
 			return result;
 		}
 
-		public static bool DrawColorList(Customize custom, MenuColor color, ref byte value) {
+		public static bool DrawColorList(uint[] colors, ref byte value) {
 			var result = false;
 
 			var size = new Vector2(-1, -1);
@@ -406,14 +444,14 @@ namespace Ktisis.Interface.Windows {
 
 					ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(0,0));
 					ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 0);
-					for (var i = 0; i < color.Colors.Length; i++) {
-						var rgb = color.Colors[i];
+					for (var i = 0; i < colors.Length; i++) {
+						var rgb = colors[i];
 						if (rgb == 0) continue;
 
 						if (i % 8 != 0) ImGui.SameLine();
 
 						var rgba = ImGui.ColorConvertU32ToFloat4(rgb);
-						if (ImGui.ColorButton($"{i}##{color.Name}_{i}", rgba, ImGuiColorEditFlags.NoBorder, ColButtonSizeSmall)) {
+						if (ImGui.ColorButton($"{i}##col_select_{i}", rgba, ImGuiColorEditFlags.NoBorder, ColButtonSizeSmall)) {
 							result |= true;
 							value = (byte)i;
 							ImGui.SetWindowFocus();
@@ -452,29 +490,10 @@ namespace Ktisis.Interface.Windows {
 		// Facial feature selector
 
 		public static void DrawFacialFeatures(Customize custom) {
-			if (FacialFeatureIcons == null || custom.FaceType != FaceType) {
-				var features = new List<TextureWrap>();
-				for (var i = 0; i < 7; i++) {
-					var index = custom.FaceType - 1 + (8 * i);
-					if (custom.Race == Race.Hrothgar)
-						index -= 4; // ???
+			if ((FacialFeatureIcons == null || custom.FaceType != FaceType) && !GetFeatureIcons.IsRunning)
+				GetFeatureIcons.Run(custom);
 
-					if (CharaMakeType == null)
-						break;
-
-					if (index < 0 || index >= CharaMakeType.FacialFeatures.Length)
-						index = 8 * i;
-
-					var iconId = (uint)CharaMakeType.FacialFeatures[index];
-					if (iconId == 0)
-						iconId = (uint)CharaMakeType.FacialFeatures[8 * i];
-
-					var icon = Services.DataManager.GetImGuiTextureIcon(iconId);
-					features.Add(icon!);
-				}
-				FacialFeatureIcons = features;
-				FaceType = custom.FaceType;
-			}
+			if (FacialFeatureIcons == null) return;
 
 			ImGui.BeginGroup();
 			ImGui.PushItemWidth(InputSize.X - ButtonIconSize.X);
@@ -546,6 +565,8 @@ namespace Ktisis.Interface.Windows {
 
 					int i = 0;
 					foreach (var (val, icon) in option.Select!) {
+						if (icon == null) continue;
+
 						if (ImGui.ImageButton(icon.ImGuiHandle, ListIconSize)) {
 							custom.Bytes[(uint)opt.Index] = (byte)val;
 							Apply(custom);
@@ -614,6 +635,7 @@ namespace Ktisis.Interface.Windows {
 							case CustomizeIndex.HairColor:
 								menuCol.Colors = HumanCmp.GetHairColors(data.TribeEnum, data.GenderEnum);
 								menuCol.AltIndex = CustomizeIndex.HairColor2;
+								menuCol.AltColors = HumanCmp.GetHairHighlights();
 								break;
 							case CustomizeIndex.LipColor:
 								menuCol.Colors = HumanCmp.GetLipColors();
@@ -659,12 +681,12 @@ namespace Ktisis.Interface.Windows {
 								if (feat == null || feat.FeatureId == 0) break;
 
 								var icon = Services.DataManager.GetImGuiTextureIcon(feat.Icon);
-								icons.Add(feat.FeatureId, icon!);
+								if (icon != null) icons.Add(feat.FeatureId, icon);
 							}
 						} else {
 							for (var x = 0; x < val.Count; x++) {
 								var icon = Services.DataManager.GetImGuiTextureIcon(val.Params[x]);
-								icons.Add(val.Graphics[x], icon!);
+								if (icon != null) icons.Add(val.Graphics[x], icon);
 							}
 						}
 						opt.Select = icons;

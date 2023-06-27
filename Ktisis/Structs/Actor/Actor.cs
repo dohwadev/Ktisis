@@ -15,8 +15,8 @@ namespace Ktisis.Structs.Actor {
 
 		[FieldOffset(0x88)] public byte ObjectID;
 
-		[FieldOffset(0xF0)] public unsafe ActorModel* Model;
-		[FieldOffset(0x104)] public RenderMode RenderMode;
+		[FieldOffset(0x100)] public unsafe ActorModel* Model;
+		[FieldOffset(0x114)] public RenderMode RenderMode;
 		[FieldOffset(0x1B4)] public uint ModelId;
 
 		[FieldOffset(0x6E0)] public Weapon MainHand;
@@ -24,14 +24,22 @@ namespace Ktisis.Structs.Actor {
 		[FieldOffset(0x818)] public Equipment Equipment;
 		[FieldOffset(0x840)] public Customize Customize;
 
-		[FieldOffset(0xC20)] public ActorGaze Gaze;
+		[FieldOffset(0x085E)] public bool IsHatHidden;
+		[FieldOffset(0x085F)] public ActorFlags Flags;
 
-		[FieldOffset(0x1A68)] public byte TargetObjectID;
-		[FieldOffset(0x1A6C)] public byte TargetMode;
+		[FieldOffset(0xC40)] public ActorGaze Gaze; // Update in ActorHooks.cs as well
 
-		public unsafe string? Name => Marshal.PtrToStringAnsi((IntPtr)GameObject.GetName());
+		public unsafe string? GetName() {
+			fixed (byte* ptr = GameObject.Name) {
+				return ptr == null ? null : Marshal.PtrToStringUTF8((IntPtr)ptr);
+			}
+		}
 
-		public string GetNameOr(string fallback) => ((ObjectKind)GameObject.ObjectKind == ObjectKind.Pc && !Ktisis.Configuration.DisplayCharName) || string.IsNullOrEmpty(Name)? fallback : Name;
+		public string GetNameOr(string fallback) {
+			var name = GetName();
+			return ((ObjectKind)GameObject.ObjectKind == ObjectKind.Pc && !Ktisis.Configuration.DisplayCharName) || string.IsNullOrEmpty(name) ? fallback : name;
+		}
+
 		public string GetNameOrId() => GetNameOr("Actor #" + ObjectID);
 
 		public unsafe IntPtr GetAddress() {
@@ -39,11 +47,6 @@ namespace Ktisis.Structs.Actor {
 		}
 
 		// Targeting
-
-		public unsafe void TargetActor(Actor* actor) {
-			TargetObjectID = actor->ObjectID;
-			TargetMode = 2;
-		}
 
 		public unsafe void LookAt(Gaze* tar, GazeControl bodyPart) {
 			if (Methods.ActorLookAt == null) return;
@@ -101,6 +104,16 @@ namespace Ktisis.Structs.Actor {
 			) {
 				Redraw(faceHack);
 			} else {
+				if (Customize.Race == Race.Viera) {
+					// avoid crash when loading invalid ears
+					var ears = Customize.RaceFeatureType;
+					Customize.RaceFeatureType = ears switch {
+						> 4 => 1,
+						0 => 4,
+						_ => ears
+					};
+				}
+
 				var res = UpdateCustomize();
 				if (!res) {
 					Logger.Warning("Failed to update character. Forcing redraw.");
@@ -126,5 +139,13 @@ namespace Ktisis.Structs.Actor {
 		Draw = 0,
 		Unload = 2,
 		Load = 4
+	}
+
+	[Flags]
+	public enum ActorFlags : byte {
+		None = 0,
+		WeaponsVisible = 1,
+		WeaponsDrawn = 2,
+		VisorToggle = 8
 	}
 }

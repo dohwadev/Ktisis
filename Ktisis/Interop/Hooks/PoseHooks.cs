@@ -53,7 +53,7 @@ namespace Ktisis.Interop.Hooks {
 			var syncModelSpace = Services.SigScanner.ScanText("48 83 EC 18 80 79 38 00");
 			SyncModelSpaceHook = Hook<SyncModelSpaceDelegate>.FromAddress(syncModelSpace, SyncModelSpaceDetour);
 
-			var lookAtIK = Services.SigScanner.ScanText("E8 ?? ?? ?? ?? 80 7C 24 ?? ?? 48 8D 4C 24 ??");
+			var lookAtIK = Services.SigScanner.ScanText("48 8B C4 48 89 58 08 48 89 70 10 F3 0F 11 58 ??");
 			LookAtIKHook = Hook<LookAtIKDelegate>.FromAddress(lookAtIK, LookAtIKDetour);
 
 			var animFrozen = Services.SigScanner.ScanText("E8 ?? ?? ?? ?? 0F B6 F0 84 C0 74 0E");
@@ -222,15 +222,17 @@ namespace Ktisis.Interop.Hooks {
 
 		public static unsafe hkaDefaultAnimationControl* GetAnimationControl(GameObject? go) {
 			if (go == null) return null;
-			var csObject = (FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject*)go.Address;
-			if (csObject->DrawObject == null ||
-				csObject->DrawObject->Skeleton == null ||
-				csObject->DrawObject->Skeleton->PartialSkeletons == null ||
-				csObject->DrawObject->Skeleton->PartialSkeletons->GetHavokAnimatedSkeleton(0) == null ||
-				csObject->DrawObject->Skeleton->PartialSkeletons->GetHavokAnimatedSkeleton(0)->AnimationControls.Length == 0 ||
-				csObject->DrawObject->Skeleton->PartialSkeletons->GetHavokAnimatedSkeleton(0)->AnimationControls[0].Value == null)
+
+			var actor = (Actor*)go.Address;
+			if (actor->Model == null ||
+				actor->Model->Skeleton == null ||
+				actor->Model->Skeleton->PartialSkeletons == null ||
+				actor->Model->Skeleton->PartialSkeletons->GetHavokAnimatedSkeleton(0) == null ||
+				actor->Model->Skeleton->PartialSkeletons->GetHavokAnimatedSkeleton(0)->AnimationControls.Length == 0 ||
+				actor->Model->Skeleton->PartialSkeletons->GetHavokAnimatedSkeleton(0)->AnimationControls[0].Value == null)
 				return null;
-			return csObject->DrawObject->Skeleton->PartialSkeletons->GetHavokAnimatedSkeleton(0)->AnimationControls[0];
+
+			return actor->Model->Skeleton->PartialSkeletons->GetHavokAnimatedSkeleton(0)->AnimationControls[0];
 		}
 
 		internal static void Dispose() {
